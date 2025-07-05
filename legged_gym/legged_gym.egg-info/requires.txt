@@ -1,0 +1,6 @@
+isaacgym
+rsl-rl
+matplotlib
+tensorboard
+tensorboardX
+debugpy
