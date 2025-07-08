@@ -90,6 +90,7 @@ class Go2ParkourCfg( LeggedRobotCfg ):
         self_collisions = 1 # 1 to disable, 0 to enable...bitwise filter
   
     class rewards( LeggedRobotCfg.rewards ):
+        
         soft_dof_pos_limit = 0.9
         base_height_target = 0.25
     

@@ -14,6 +14,7 @@ import matplotlib.pyplot as plt
 import numpy as np 
 import time 
 import copy
+from legged_gym.utils import webviewer
 
 def Planner(args, env_cfg, planner_cfg, ready_event):
     ctrl_dt = env_cfg.control.decimation * env_cfg.sim.dt
@@ -50,9 +51,10 @@ def Planner(args, env_cfg, planner_cfg, ready_event):
                 plan_time = time_shared[0]
                 shift_time = plan_time - last_plan_time
                 # Add information are stored in the shared memory
-                now = time.time()
+                # now = time.time()
                 actions = planner.update(shift_time)
-                print("overall update freq is ", time.time() - now)
+                # planner.update(shift_time)
+                # print("overall update freq is ", time.time() - now)
                 # actions = torch.zeros((env_cfg.env.num_agent_envs, planner_cfg.planner.horizon, env_cfg.env.num_actions), dtype=torch.float32)
                 # time.sleep(0.01)
                 plan_time_shared[0] = plan_time
@@ -61,24 +63,30 @@ def Planner(args, env_cfg, planner_cfg, ready_event):
     except KeyboardInterrupt:
         print("Keyboard Terminated for Planning")
     else:
-        planner._close_shared_memory()
         # plt.ioff()
         # plt.show()
         print("Planner Process Terminated")
 
 def World(args, env_cfg, planner_cfg, ready_event):
+    if args.web:
+        web_viewer = webviewer.WebViewer()
+
     faulthandler.enable()
     
     # add robot to the environments 
     env: LeggedRobot
     args.headless = False
     env, _ = task_registry.make_env(name=args.task, args=args, env_cfg=env_cfg)
-    env._init_shared_memory(create_new=True, ready_event=ready_event)
+    env._init_shared_memory(create_new=True, ready_event=None)
     # Then actions are generated from the planner. Make it list for transport across process
 
     # In this version ctrl_dt is equal to sim_dt 
     ctrl_dt = env_cfg.control.decimation * env_cfg.sim.dt 
     world_time = 0.0
+    obs = env.get_observations()
+
+    if args.web:
+        web_viewer.setup(env)
 
     action_shm = shared_memory.SharedMemory(
         name="action_shm", create=False, size=env.num_envs * planner_cfg.planner.horizon * env.num_actions * 32
@@ -94,7 +102,7 @@ def World(args, env_cfg, planner_cfg, ready_event):
     plan_time_shared = np.ndarray(
         1, dtype=np.float32, buffer=plan_time_shm.buf
     )
-    plan_time_shared[0] = -ctrl_dt
+    plan_time_shared[0] = 10 # -ctrl_dt
 
     time_shm = shared_memory.SharedMemory(
                 name="time_shm", create=False, size=32
@@ -102,6 +110,7 @@ def World(args, env_cfg, planner_cfg, ready_event):
     time_shared = np.ndarray(1, dtype=np.float32, buffer=time_shm.buf)
     time_shared[0] = 0.0
 
+    state_published = False
     # Enable interactive plotting
     # plt.ion()
     # fig, ax = plt.subplots()
@@ -124,10 +133,8 @@ def World(args, env_cfg, planner_cfg, ready_event):
                 # now = time.time()
                 actions_applied = torch.tensor(action_shared, dtype=torch.float32, device=env.device)
                 while world_time <= (plan_time_shared[0] + ctrl_dt):
-                    obs, priv_state, rews, done, infos = env.step(actions_applied[:, 0, :])
-
+                    obs, priv_state, rews, done, infos = env.step(actions_applied[:, 0, :]) 
                     env.publish_planner_info()
-
                     # rewards.append(torch.mean(rews).item())
                     
                     # # Update plot data
@@ -143,7 +150,14 @@ def World(args, env_cfg, planner_cfg, ready_event):
                     world_time += ctrl_dt
                     time_shared[:] = world_time
                     # print("time is: ", world_time)
-
+                    if not state_published:
+                        ready_event.set()
+                        state_published = True
+                    if args.web:
+                        web_viewer.render(fetch_results=True,
+                                    step_graphics=True,
+                                    render_all_camera_sensors=True,
+                                    wait_for_page_load=True)
 
     except KeyboardInterrupt:
         print("Keyboard Terminated for Simulation")
@@ -196,10 +210,10 @@ if __name__ == '__main__':
     mp.set_start_method('spawn')
     ready_event = mp.Event()
 
-    # World(args, env_cfg, planner_cfg)    
-    p1 = Process(target=Planner, args=(args, env_cfg, planner_cfg, ready_event))
-    p2 = Process(target=World, args=(args, env_cfg, planner_cfg, ready_event))
-    p1.start()
-    p2.start()
-    p1.join()
-    p2.join()
+    World(args, env_cfg, planner_cfg, ready_event)    
+    # p1 = Process(target=Planner, args=(args, env_cfg, planner_cfg, ready_event))
+    # p2 = Process(target=World, args=(args, env_cfg, planner_cfg, ready_event))
+    # p1.start()
+    # p2.start()
+    # p1.join()
+    # p2.join()

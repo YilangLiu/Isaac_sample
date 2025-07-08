@@ -100,9 +100,7 @@ class MPPI_Isaac(ABC):
         self.rollout_envs.set_rollout_env_idx()
         
         # apply rollout 
-        now = time.time()
         rewards = self.rollout(U_sampled).view(-1, self.num_samples_per_env)
-        print("rollout time is ", time.time() - now)
         # For every consecutive sampled environments, find the idxes that maximize the cumulative reward
         best_idxs = torch.argmax(rewards, dim=1) + torch.arange(0, self.num_planner_envs, 
                                                                 self.num_samples_per_env, 
@@ -111,8 +109,6 @@ class MPPI_Isaac(ABC):
         # Clear the storage to for next iteration
         self.storage.clear()
 
-        # print("U_sampled shape is: ", U_sampled.shape, " select: ", best_idxs)
-        # print("reward: ", rewards)
         return U_sampled[best_idxs] 
 
     def rollout(self, actions):
@@ -127,23 +123,23 @@ class MPPI_Isaac(ABC):
         Returns:
             rewards (torch.Tensor): the cumulative reward after rolling out the system dynamics. shape [num_planner_envs]
         """
-        with torch.inference_mode():
-            curr_reset_env_ids = torch.zeros(self.num_planner_envs, device= self.device, dtype=torch.int64)
-            for i in range(self.T):
-                obs, privileged_obs, rewards, dones, infos = self.rollout_envs.step(actions[:, i, :])
-                obs, rewards, dones = obs.to(self.device), rewards.to(self.device), dones.to(self.device)
-                curr_reset_env_ids |= dones.to(torch.int64)
-                self.transition.observations = obs
-                self.transition.critic_observations = privileged_obs
-                self.transition.actions = actions[:, i, :]
-                self.transition.rewards = rewards.clone()
-                self.transition.dones = curr_reset_env_ids
-                self.transition.values = torch.zeros((self.num_planner_envs, 1), device = self.device)
-                self.storage.add_transitions(self.transition)
-                self.transition.clear()
-            self.storage.compute_returns(last_values=torch.zeros((self.num_planner_envs, 1), device = self.device),
-                                        gamma=1,
-                                        lam=0)
+
+        curr_reset_env_ids = torch.zeros(self.num_planner_envs, device= self.device, dtype=torch.int64)
+        for i in range(self.T):
+            obs, privileged_obs, rewards, dones, infos = self.rollout_envs.step(actions[:, i, :])
+            obs, rewards, dones = obs.to(self.device), rewards.to(self.device), dones.to(self.device)
+            curr_reset_env_ids |= dones.to(torch.int64)
+            self.transition.observations = obs
+            self.transition.critic_observations = privileged_obs
+            self.transition.actions = actions[:, i, :]
+            self.transition.rewards = rewards.clone()
+            self.transition.dones = curr_reset_env_ids
+            self.transition.values = torch.zeros((self.num_planner_envs, 1), device = self.device)
+            self.storage.add_transitions(self.transition)
+            self.transition.clear()
+        self.storage.compute_returns(last_values=torch.zeros((self.num_planner_envs, 1), device = self.device),
+                                    gamma=1,
+                                    lam=0)
         # Return the cumulative sum of rewards at step 0
         return self.storage.returns[0].to(self.device)
     

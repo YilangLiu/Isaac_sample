@@ -307,6 +307,15 @@ class LeggedRobotCfg(BaseConfig):
             dof_error = -0.04
             feet_stumble = -1
             feet_edge = -1
+
+            # dial_MPC rewards 
+            dial_gaits = 0.1
+            dial_height = 1.
+            dial_yaw = 1.
+            dial_vel = 1.
+            dial_ang_vel = 1.
+            dial_air_time = 0.
+
             
         only_positive_rewards = False # if true negative total rewards are clipped at zero (avoids early termination problems)
         tracking_sigma = 0.2 # tracking reward = exp(-error^2/sigma)
@@ -315,6 +324,10 @@ class LeggedRobotCfg(BaseConfig):
         soft_torque_limit = 0.4
         base_height_target = 1.
         max_contact_force = 40. # forces above this value are penalized
+        gait = "trot"
+        height_target = 0.3
+        vel_tar = [0.0, 0.0, 0.0]
+        ang_vel_tar = [0.0, 0.0, 0.0]
 
     # viewer camera:
     class viewer:
@@ -416,7 +429,7 @@ class LeggedRobotCfgSample(BaseConfig):
     class planner:
         name: str = 'MPPI'
         num_samples: int = 20  # Reduced from 100 to 20 to reduce memory requirements
-        horizon: int = 10
+        horizon: int = 30
         num_knots: int = 4
         sampling_method: str = 'gaussian'
         device: str = 'cuda:0'

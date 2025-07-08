@@ -46,6 +46,7 @@ from legged_gym.envs.base.base_task import BaseTask
 from legged_gym.utils.terrain import Terrain
 from legged_gym.utils.math import *
 from legged_gym.utils.helpers import class_to_dict
+from legged_gym.utils.gait_scheduler import get_foot_step
 from scipy.spatial.transform import Rotation as R
 from .legged_robot_config import LeggedRobotCfg
 from multiprocessing import shared_memory
@@ -53,6 +54,7 @@ from multiprocessing import shared_memory
 from tqdm import tqdm
 import cv2
 import matplotlib.pyplot as plt
+from torchcubicspline import natural_cubic_spline_coeffs, NaturalCubicSpline
 
 def euler_from_quaternion(quat_angle):
         """
@@ -146,6 +148,7 @@ class LeggedRobot(BaseTask):
             self.gym.simulate(self.sim)
             self.gym.fetch_results(self.sim, True)
             self.gym.refresh_dof_state_tensor(self.sim)
+
         self.post_physics_step()
 
         clip_obs = self.cfg.normalization.clip_observations
@@ -245,6 +248,7 @@ class LeggedRobot(BaseTask):
         self.commands_shared[:] = self.commands.cpu().numpy()
         self.time_out_buf_shared[:] = self.time_out_buf.cpu().numpy()
         self.privileged_obs_buf_shared[:] = self.privileged_obs_buf.cpu().numpy()
+        self.episode_length_buf_shared[:] = self.episode_length_buf.cpu().numpy()
         
     def post_physics_step(self):
         """ check terminations, compute observations and rewards
@@ -297,6 +301,11 @@ class LeggedRobot(BaseTask):
         self.last_dof_vel[:] = self.dof_vel[:]
         self.last_torques[:] = self.torques[:]
         self.last_root_vel[:] = self.root_states[:, 7:13]
+
+        self.foot_velocities[:] = self.rigid_body_states.view(self.num_envs, self.num_bodies, 13
+                                                          )[:, self.feet_indices, 7:10]
+        self.foot_positions[:] = self.rigid_body_states.view(self.num_envs, self.num_bodies, 13)[:, self.feet_indices,
+                              0:3]
 
         if self.viewer and self.enable_viewer_sync and self.debug_viz:
             self.gym.clear_lines(self.viewer)
@@ -415,13 +424,18 @@ class LeggedRobot(BaseTask):
 
         # Used cached priv_state for reset
         if priv_states is None:
-            priv_states = torch.repeat_interleave(torch.from_numpy(self.privileged_obs_buf_shared), self.num_samples_per_env, dim=0).to(self.device)
+            priv_states = self.init_priv_state
 
         # reset robot dofs 
         self._set_dofs(env_ids, priv_states[env_ids, 13:])
 
         # reset robot root_state
         self._set_root_states(env_ids, priv_states[env_ids, :13])
+
+        # # refresh gym state
+        # self.gym.simulate(self.sim)
+        # self.gym.fetch_results(self.sim, True)
+        # self.gym.refresh_rigid_body_state_tensor(self.sim)
 
         # reset buffers
         self.last_actions[env_ids] = torch.repeat_interleave(torch.from_numpy(self.last_actions_shared).to(self.device), self.num_samples_per_env, dim=0)[env_ids]
@@ -448,11 +462,10 @@ class LeggedRobot(BaseTask):
         # set command 
         self.commands = torch.repeat_interleave(torch.from_numpy(self.commands_shared).to(self.device), self.num_samples_per_env, dim=0)
 
-        # self.post_physics_step()
-        self.gym.refresh_actor_root_state_tensor(self.sim)
-        self.gym.refresh_net_contact_force_tensor(self.sim)
-        self.gym.refresh_rigid_body_state_tensor(self.sim)
-        self.gym.refresh_force_sensor_tensor(self.sim)
+        # self.gym.refresh_actor_root_state_tensor(self.sim)
+        # self.gym.refresh_net_contact_force_tensor(self.sim)
+        # self.gym.refresh_rigid_body_state_tensor(self.sim)
+        # self.gym.refresh_force_sensor_tensor(self.sim)
         self._update_goals()
         
         return 
@@ -900,10 +913,14 @@ class LeggedRobot(BaseTask):
         self.dof_vel = self.dof_state.view(self.num_envs, self.num_dof, 2)[..., 1]
         self.base_quat = self.root_states[:, 3:7]
         self.base_pos = self.root_states[:, :3]
+        self.init_priv_state = torch.cat((self.root_states[:, :13],
+                                        self.dof_pos,
+                                        self.dof_vel), dim=-1).to(self.device)
 
         self.force_sensor_tensor = gymtorch.wrap_tensor(force_sensor_tensor).view(self.num_envs, 4, 6) # for feet only, see create_env()
         self.contact_forces = gymtorch.wrap_tensor(net_contact_forces).view(self.num_envs, -1, 3) # shape: num_envs, num_bodies, xyz axis
-
+        self.foot_positions = self.rigid_body_states[:, self.feet_indices, 0:3]
+        self.foot_velocities = self.rigid_body_states[:, self.feet_indices, 7:10]
         # initialize some data used later on
         self.is_planner = self.cfg.env.is_planner
         self.common_step_counter = 0
@@ -911,6 +928,28 @@ class LeggedRobot(BaseTask):
         self.num_agent_envs = self.cfg.env.num_agent_envs
         self.extras = {}
         self.ctrl_dt = self.cfg.control.decimation * self.cfg.sim.dt
+        self.gait = self.cfg.rewards.gait
+        self._gait_params = {
+            #                  ratio, cadence, amplitude
+            "stand": torch.tensor([1.0, 1.0, 0.0], dtype=torch.float32, device=self.device),
+            "walk": torch.tensor([0.75, 1.0, 0.08], dtype=torch.float32, device=self.device),
+            "trot": torch.tensor([0.45, 2, 0.08], dtype=torch.float32, device=self.device),
+            "canter": torch.tensor([0.4, 4, 0.06], dtype=torch.float32, device=self.device),
+            "gallop": torch.tensor([0.3, 3.5, 0.10], dtype=torch.float32, device=self.device),
+        }
+        self._gait_phase = {
+                    "stand": torch.zeros(4, dtype=torch.float32, device=self.device),
+                    "walk": torch.tensor([0.0, 0.5, 0.75, 0.25], dtype=torch.float32, device=self.device),
+                    "trot": torch.tensor([0.0, 0.5, 0.5, 0.0], dtype=torch.float32, device=self.device),
+                    "canter": torch.tensor([0.0, 0.33, 0.33, 0.66], dtype=torch.float32, device=self.device),
+                    "gallop": torch.tensor([0.0, 0.05, 0.4, 0.35], dtype=torch.float32, device=self.device),
+                }
+        self.duty_ratio, self.cadence, self.amplitude = self._gait_params[self.gait]
+        self.phase = self._gait_phase[self.gait]
+        self.height_target = self.cfg.rewards.height_target
+        self.vel_tar = to_torch(self.cfg.rewards.vel_tar)
+        self.ang_vel_tar = to_torch(self.cfg.rewards.ang_vel_tar)
+        self.get_foot_step_vmap = torch.vmap(get_foot_step, in_dims=(None, None, None, None, 0))
 
         self.gravity_vec = to_torch(get_axis_params(-1., self.up_axis_idx), device=self.device).repeat((self.num_envs, 1))
         self.forward_vec = to_torch([1., 0., 0.], device=self.device).repeat((self.num_envs, 1))
@@ -1118,8 +1157,16 @@ class LeggedRobot(BaseTask):
         )
         self.privileged_obs_buf_shared[:] = np.zeros((self.num_agent_envs, self.num_privileged_obs), dtype=np.float32)
 
-        if not self.is_planner:
-            ready_event.set()
+        self.episode_length_buf_shm = shared_memory.SharedMemory(
+            name="episode_length_buf_shm", create = create_new, 
+            size= self.num_agent_envs * 32
+        )
+        self.episode_length_buf_shared = np.ndarray(
+            (self.num_agent_envs, ), dtype=np.int64, buffer=self.episode_length_buf_shm.buf
+        )
+        self.episode_length_buf_shared[:] = np.zeros((self.num_agent_envs, ), dtype=np.int64)
+        # if not self.is_planner:
+        #     ready_event.set()
 
     def _close_shared_memory(self):
         self.last_actions_shm.close()
@@ -1152,6 +1199,8 @@ class LeggedRobot(BaseTask):
         self.time_out_buf_shm.unlink()
         self.privileged_obs_buf_shm.close()
         self.privileged_obs_buf_shm.unlink()
+        self.episode_length_buf_shm.close()
+        self.episode_length_buf_shm.unlink()
     
     def _prepare_reward_function(self):
         """ Prepares a list of reward functions, whcih will be called to compute the total reward.
@@ -1349,7 +1398,6 @@ class LeggedRobot(BaseTask):
         self.num_bodies = len(body_names)
         self.num_dofs = len(self.dof_names)
         feet_names = [s for s in body_names if self.cfg.asset.foot_name in s]
-
 
         for s in ["FR_foot", "FL_foot", "RR_foot", "RL_foot"]:
             feet_idx = self.gym.find_asset_rigid_body_index(robot_asset, s)
@@ -1708,3 +1756,37 @@ class LeggedRobot(BaseTask):
         self.feet_at_edge = self.contact_filt & feet_at_edge
         rew = (self.terrain_levels > 3) * torch.sum(self.feet_at_edge, dim=-1)
         return rew
+
+    def _reward_dial_gaits(self):
+        z_feet_tar = self.get_foot_step_vmap(self.duty_ratio, self.cadence, self.amplitude, self.phase, self.episode_length_buf * self.ctrl_dt)
+        rew = -torch.sum(((z_feet_tar - self.foot_positions[:,:,2]) / 0.05) ** 2)
+        return rew
+    
+    def _reward_dial_height(self):
+        base_height = self.root_states[:,2]
+        rew = -torch.sum((base_height - self.height_target)**2)
+        return rew
+    
+    def _reward_dial_yaw(self):
+        d_yaw = self.target_yaw - self.yaw
+        rew = -torch.square(torch.arctan2(torch.sin(d_yaw), torch.cos(d_yaw)))
+        return rew
+
+    def _reward_dial_vel(self):
+        rew = -torch.sum((self.base_lin_vel[:, :2] - self.vel_tar[:2])**2)
+        return rew
+    
+    def _reward_dial_ang_vel(self):
+        rew = -torch.sum((self.base_ang_vel[:, 2] - self.ang_vel_tar[2]) **2)
+        return rew
+
+    def _reward_dial_air_time(self):
+        contact = self.contact_forces[:, self.feet_indices, 2] > 1.
+        contact_filt = torch.logical_or(contact, self.last_contacts) 
+        self.last_contacts = contact
+        first_contact = (self.feet_air_time > 0.) * contact_filt
+        self.feet_air_time += self.dt
+        rew_airTime = torch.sum((self.feet_air_time - 0.5) * first_contact, dim=1) # reward only on first contact with the ground
+        rew_airTime *= torch.norm(self.commands[:, :2], dim=1) > 0.1 #no reward for zero command
+        self.feet_air_time *= ~contact_filt
+        return rew_airTime

@@ -92,6 +92,33 @@ class Go2ParkourCfg( LeggedRobotCfg ):
     class rewards( LeggedRobotCfg.rewards ):
         soft_dof_pos_limit = 0.9
         base_height_target = 0.25
+        gait = "trot"
+        vel_tar = [1.0, 0.0, 0.0]
+        ang_vel_tar = [0.0, 0.0, 0.0]
+        class scales(LeggedRobotCfg.rewards.scales):
+            # tracking rewards
+            tracking_goal_vel = 0.0
+            tracking_yaw = 0.0
+            # regularization rewards
+            lin_vel_z = 0.0
+            ang_vel_xy = 0.0
+            orientation = 0.5
+            dof_acc = 0.0
+            collision = 0.
+            action_rate = 0.
+            delta_torques = 0.
+            torques = 0.
+            hip_pos = 0.
+            dof_error = 0.0
+            feet_stumble = 0.0
+            feet_edge = 0.0
+
+            dial_gaits = 0.0
+            dial_height = 1.0
+            dial_yaw = 0.3
+            dial_vel = 1.0
+            dial_ang_vel = 1.0
+            dial_air_time = 0.
     
     class depth( LeggedRobotCfg.depth):
         
@@ -119,7 +146,7 @@ class Go2ParkourCfg( LeggedRobotCfg ):
     class terrain( LeggedRobotCfg.terrain):
         mesh_type = 'trimesh'  # Explicitly set for clarity
         num_rows = 2 #10
-        num_cols = 2 # 40
+        num_cols = 40
         height = [0.02, 0.02]
         terrain_dict = {"smooth slope": 0., 
                         "rough slope up": 0.0,
@@ -156,14 +183,16 @@ class Go2ParkourCfg( LeggedRobotCfg ):
         action_delay_view = 0
 
     class env(LeggedRobotCfg.env):
-        num_envs = 1
+        num_envs = 10
         episode_length_s = 60 # episode length in seconds 
         num_privileged_obs = 37 # base position, base orientation, base_lin_vel, base_ang_vel, dof_pos, dof_vel  
 
 class Go2ParkourCfgSample( LeggedRobotCfgSample ):
     class planner( LeggedRobotCfgSample.planner ):
-        num_samples = 100 
+        num_samples = 1000 
         sample_noise = 0.05
+        horizon = 16
+        num_knots = 4
 
         
   
