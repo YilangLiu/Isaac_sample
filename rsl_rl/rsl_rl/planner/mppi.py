@@ -23,14 +23,18 @@ class MPPI_Isaac(ABC):
         self.device = planner_cfg.planner.device
         self.T = planner_cfg.planner.horizon
         self.nu = env_cfg.env.num_actions
-        self.U_nom = torch.zeros((self.num_agent_envs, self.num_knots, self.nu), device=self.device)
         self.rollout_envs: LeggedRobot
         args.headless = True
         env_cfg.env.is_planner = True
+        # env_cfg.env.is_planner = False
         env_cfg.env.num_envs = self.num_planner_envs # Initialize envs = num_planner_envs * samples_per_env
+        args.use_camera = False # disable camera for planner
         self.rollout_envs, _ = task_registry.make_env(name=args.task, args=args, env_cfg=env_cfg)
         self.rollout_envs._init_shared_memory(create_new=False, ready_event=extras["ready_event"])
+        # self.rollout_envs._init_shared_memory(create_new=True, ready_event=None)
         self.rollout_envs.num_samples_per_env = self.num_samples_per_env
+        self.U_nom = torch.zeros((self.num_agent_envs, self.num_knots, self.nu), device=self.device) + self.rollout_envs.default_dof_pos.reshape((1, 1, self.nu))
+
         self.noise_sigma = torch.eye(self.nu, device=self.device) * planner_cfg.planner.sample_noise
         self.noise_mu = torch.zeros(self.nu, device=self.device)
         self.noise_dist = MultivariateNormal(self.noise_mu, self.noise_sigma)
@@ -100,12 +104,14 @@ class MPPI_Isaac(ABC):
         self.rollout_envs.set_rollout_env_idx()
         
         # apply rollout 
+        now = time.time()
         rewards = self.rollout(U_sampled).view(-1, self.num_samples_per_env)
+        print("Rollout time: ", time.time() - now)
+
         # For every consecutive sampled environments, find the idxes that maximize the cumulative reward
         best_idxs = torch.argmax(rewards, dim=1) + torch.arange(0, self.num_planner_envs, 
                                                                 self.num_samples_per_env, 
                                                                 device=self.device)
-        
         # Clear the storage to for next iteration
         self.storage.clear()
 
@@ -139,8 +145,9 @@ class MPPI_Isaac(ABC):
             self.transition.clear()
         self.storage.compute_returns(last_values=torch.zeros((self.num_planner_envs, 1), device = self.device),
                                     gamma=1,
-                                    lam=0)
-        # Return the cumulative sum of rewards at step 0
+                                    lam=1)
+        
+        # Return the cumulative sum of rewards at step 0 
         return self.storage.returns[0].to(self.device)
     
     def sample_noise(self):

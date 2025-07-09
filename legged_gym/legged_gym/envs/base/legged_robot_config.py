@@ -236,9 +236,16 @@ class LeggedRobotCfg(BaseConfig):
         default_joint_angles = { # target angles when action = 0.0
             "joint_a": 0., 
             "joint_b": 0.}
+        joint_angles_range_low = {
+            "joint_a": 0., 
+            "joint_b": 0.}
+        joint_angles_range_high = {
+            "joint_a": 0., 
+            "joint_b": 0.}
+
 
     class control:
-        control_type = 'P' # P: position, V: velocity, T: torques
+        control_type = 'P' # P: position, V: velocity, T: torques, C: Custom dial mpc
         # PD Drive parameters:
         stiffness = {'joint_a': 10.0, 'joint_b': 15.}  # [N*m/rad]
         damping = {'joint_a': 1.0, 'joint_b': 1.5}     # [N*m*s/rad]
@@ -334,6 +341,9 @@ class LeggedRobotCfg(BaseConfig):
         ref_env = 0
         pos = [10, 0, 6]  # [m]
         lookat = [11., 5, 3.]  # [m]
+    
+    class shared_memory:
+        names = []
 
     class sim:
         dt =  0.005

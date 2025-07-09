@@ -106,7 +106,6 @@ class LeggedRobot(BaseTask):
         if not self.headless:
             self.set_camera(self.cfg.viewer.pos, self.cfg.viewer.lookat)
         self._init_buffers()
-        # self._init_shared_memory(create_new= not self.is_planner)
         self._prepare_reward_function()
         self.init_done = True
         self.global_counter = 0
@@ -124,6 +123,11 @@ class LeggedRobot(BaseTask):
         actions = self.reindex(actions)
 
         actions = actions.to(self.device)
+
+        # if not self.is_planner:
+        #     print("action_history_buf: ", self.action_history_buf.shape)
+        #     print("actions: ", actions[:, None, :].clone().shape)
+        #     print("num_envs is ", self.num_envs)
 
         self.action_history_buf = torch.cat([self.action_history_buf[:, 1:].clone(), actions[:, None, :].clone()], dim=1)
         # False, no action delay
@@ -462,10 +466,6 @@ class LeggedRobot(BaseTask):
         # set command 
         self.commands = torch.repeat_interleave(torch.from_numpy(self.commands_shared).to(self.device), self.num_samples_per_env, dim=0)
 
-        # self.gym.refresh_actor_root_state_tensor(self.sim)
-        # self.gym.refresh_net_contact_force_tensor(self.sim)
-        # self.gym.refresh_rigid_body_state_tensor(self.sim)
-        # self.gym.refresh_force_sensor_tensor(self.sim)
         self._update_goals()
         
         return 
@@ -725,10 +725,10 @@ class LeggedRobot(BaseTask):
         control_type = self.cfg.control.control_type
         if control_type=="P":
             if not self.cfg.domain_rand.randomize_motor:  # TODO add strength to gain directly
-                torques = self.p_gains*(actions_scaled + self.default_dof_pos_all - self.dof_pos) - self.d_gains*self.dof_vel
+                # torques = self.p_gains*(actions_scaled + self.default_dof_pos_all - self.dof_pos) - self.d_gains*self.dof_vel
+                torques = self.p_gains*(actions_scaled - self.dof_pos) - self.d_gains*self.dof_vel
             else:
                 torques = self.motor_strength[0] * self.p_gains*(actions_scaled + self.default_dof_pos_all - self.dof_pos) - self.motor_strength[1] * self.d_gains*self.dof_vel
-                
         elif control_type=="V":
             torques = self.p_gains*(actions_scaled - self.dof_vel) - self.d_gains*(self.dof_vel - self.last_dof_vel)/self.sim_params.dt
         elif control_type=="T":
@@ -776,6 +776,7 @@ class LeggedRobot(BaseTask):
             
         else:
             self.root_states[env_ids] = root_states
+            self.root_states[env_ids, :2] += torch_rand_float(-0.01, 0.01, (len(env_ids), 2), device=self.device)
         env_ids_int32 = env_ids.to(dtype=torch.int32)
         self.gym.set_actor_root_state_tensor_indexed(self.sim,
                                                      gymtorch.unwrap_tensor(self.root_states),
@@ -986,10 +987,16 @@ class LeggedRobot(BaseTask):
         # joint positions offsets and PD gains
         self.default_dof_pos = torch.zeros(self.num_dof, dtype=torch.float, device=self.device, requires_grad=False)
         self.default_dof_pos_all = torch.zeros(self.num_envs, self.num_dof, dtype=torch.float, device=self.device, requires_grad=False)
+        self.default_dof_pos_low = torch.zeros(self.num_dof, dtype=torch.float, device=self.device, requires_grad=False)
+        self.default_dof_pos_high = torch.zeros(self.num_dof, dtype=torch.float, device=self.device, requires_grad=False)
         for i in range(self.num_dofs):
             name = self.dof_names[i]
             angle = self.cfg.init_state.default_joint_angles[name]
+            angle_low = self.cfg.init_state.joint_angles_range_low[name]
+            angle_high = self.cfg.init_state.joint_angles_range_high[name]
             self.default_dof_pos[i] = angle
+            self.default_dof_pos_low[i] = angle_low
+            self.default_dof_pos_high[i] = angle_high
             found = False
             for dof_name in self.cfg.control.stiffness.keys():
                 if dof_name in name:
@@ -1211,8 +1218,9 @@ class LeggedRobot(BaseTask):
             scale = self.reward_scales[key]
             if scale==0:
                 self.reward_scales.pop(key) 
-            else:
-                self.reward_scales[key] *= self.dt
+            # TODO: restore this to see the difference
+            # else:
+            #     self.reward_scales[key] *= self.dt 
         # prepare list of functions
         self.reward_functions = []
         self.reward_names = []
@@ -1430,6 +1438,7 @@ class LeggedRobot(BaseTask):
             # create env instance
             env_handle = self.gym.create_env(self.sim, env_lower, env_upper, int(np.sqrt(self.num_envs)))
             pos = self.env_origins[i].clone()
+            pos[:2] += torch_rand_float(-1., 1., (2,1), device=self.device).squeeze(1) * 0.001 # initialize a slightly random positions 
             if self.cfg.env.randomize_start_pos:
                 pos[:2] += torch_rand_float(-1., 1., (2,1), device=self.device).squeeze(1)
             if self.cfg.env.randomize_start_yaw:

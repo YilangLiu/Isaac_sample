@@ -9,12 +9,13 @@ import pdb
 from rsl_rl.planner.mppi import MPPI_Isaac
 from multiprocessing import Process, shared_memory
 import multiprocessing as mp 
-import zerorpc
 import matplotlib.pyplot as plt
 import numpy as np 
 import time 
 import copy
 from legged_gym.utils import webviewer
+from legged_gym.utils.clear_cache import clear_cache_name
+import traceback
 
 def Planner(args, env_cfg, planner_cfg, ready_event):
     ctrl_dt = env_cfg.control.decimation * env_cfg.sim.dt
@@ -54,7 +55,7 @@ def Planner(args, env_cfg, planner_cfg, ready_event):
                 # now = time.time()
                 actions = planner.update(shift_time)
                 # planner.update(shift_time)
-                # print("overall update freq is ", time.time() - now)
+                # print("planning update freq is ", time.time() - now)
                 # actions = torch.zeros((env_cfg.env.num_agent_envs, planner_cfg.planner.horizon, env_cfg.env.num_actions), dtype=torch.float32)
                 # time.sleep(0.01)
                 plan_time_shared[0] = plan_time
@@ -62,9 +63,18 @@ def Planner(args, env_cfg, planner_cfg, ready_event):
                 action_shared[:] = actions.cpu().numpy()
     except KeyboardInterrupt:
         print("Keyboard Terminated for Planning")
-    else:
+    except Exception as e:
         # plt.ioff()
         # plt.show()
+        print(f"Planner Process Terminated: {e}")
+        traceback.print_exc()
+    finally:
+        # action_shm.close()
+        # action_shm.unlink()
+        # time_shm.close()
+        # time_shm.unlink()
+        # plan_time_shm.close()
+        # plan_time_shm.unlink()
         print("Planner Process Terminated")
 
 def World(args, env_cfg, planner_cfg, ready_event):
@@ -75,7 +85,7 @@ def World(args, env_cfg, planner_cfg, ready_event):
     
     # add robot to the environments 
     env: LeggedRobot
-    args.headless = False
+    args.headless = True
     env, _ = task_registry.make_env(name=args.task, args=args, env_cfg=env_cfg)
     env._init_shared_memory(create_new=True, ready_event=None)
     # Then actions are generated from the planner. Make it list for transport across process
@@ -89,12 +99,12 @@ def World(args, env_cfg, planner_cfg, ready_event):
         web_viewer.setup(env)
 
     action_shm = shared_memory.SharedMemory(
-        name="action_shm", create=False, size=env.num_envs * planner_cfg.planner.horizon * env.num_actions * 32
+        name="action_shm", create=False, size=env.num_agent_envs * planner_cfg.planner.horizon * env.num_actions * 32
     )
     action_shared = np.ndarray(
-        (env.num_envs, planner_cfg.planner.horizon, env.num_actions), dtype=np.float32, buffer=action_shm.buf
+        (env.num_agent_envs, planner_cfg.planner.horizon, env.num_actions), dtype=np.float32, buffer=action_shm.buf
     )
-    action_shared[:] = np.zeros((env.num_envs, planner_cfg.planner.horizon, env.num_actions), dtype=np.float32)
+    action_shared[:] = np.zeros((env.num_agent_envs, planner_cfg.planner.horizon, env.num_actions), dtype=np.float32)
 
     plan_time_shm = shared_memory.SharedMemory(
             name="plan_time_shm", create=False, size=32
@@ -102,7 +112,7 @@ def World(args, env_cfg, planner_cfg, ready_event):
     plan_time_shared = np.ndarray(
         1, dtype=np.float32, buffer=plan_time_shm.buf
     )
-    plan_time_shared[0] = 10 # -ctrl_dt
+    plan_time_shared[0] = -ctrl_dt
 
     time_shm = shared_memory.SharedMemory(
                 name="time_shm", create=False, size=32
@@ -133,7 +143,10 @@ def World(args, env_cfg, planner_cfg, ready_event):
                 # now = time.time()
                 actions_applied = torch.tensor(action_shared, dtype=torch.float32, device=env.device)
                 while world_time <= (plan_time_shared[0] + ctrl_dt):
+                    # print("action appled shape: ", actions_applied.shape)
+                    # now = time.time()
                     obs, priv_state, rews, done, infos = env.step(actions_applied[:, 0, :]) 
+                    # print("step time is: ", time.time() - now)
                     env.publish_planner_info()
                     # rewards.append(torch.mean(rews).item())
                     
@@ -157,7 +170,7 @@ def World(args, env_cfg, planner_cfg, ready_event):
                         web_viewer.render(fetch_results=True,
                                     step_graphics=True,
                                     render_all_camera_sensors=True,
-                                    wait_for_page_load=True)
+                                    wait_for_page_load=False)
 
     except KeyboardInterrupt:
         print("Keyboard Terminated for Simulation")
@@ -165,6 +178,7 @@ def World(args, env_cfg, planner_cfg, ready_event):
         # plt.ioff()
         # plt.show()
         print(f"Simulation Process Terminated: {e}")
+        traceback.print_exc()
     finally:
         env._close_shared_memory()
         action_shm.close()
@@ -177,12 +191,15 @@ def World(args, env_cfg, planner_cfg, ready_event):
 
 if __name__ == '__main__':
     args = get_args()
-    
+
     # Load env configs 
     env_cfg, planner_cfg = task_registry.get_cfgs(name=args.task) # default is go2_stair
     env_cfg.env.num_samples_per_env = planner_cfg.planner.num_samples
     # We will need to rewrite the num_envs for initializing the planner environment
     env_cfg.env.num_agent_envs = env_cfg.env.num_envs
+
+    for name in env_cfg.shared_memory.names:
+        clear_cache_name(name)
 
     ctrl_dt = env_cfg.control.decimation * env_cfg.sim.dt 
     action_shm = shared_memory.SharedMemory(
@@ -210,10 +227,11 @@ if __name__ == '__main__':
     mp.set_start_method('spawn')
     ready_event = mp.Event()
 
-    World(args, env_cfg, planner_cfg, ready_event)    
-    # p1 = Process(target=Planner, args=(args, env_cfg, planner_cfg, ready_event))
-    # p2 = Process(target=World, args=(args, env_cfg, planner_cfg, ready_event))
-    # p1.start()
-    # p2.start()
-    # p1.join()
-    # p2.join()
+    # World(args, env_cfg, planner_cfg, ready_event)  
+    # Planner(args, env_cfg, planner_cfg, ready_event)    
+    p1 = Process(target=Planner, args=(args, env_cfg, planner_cfg, ready_event))
+    p2 = Process(target=World, args=(args, env_cfg, planner_cfg, ready_event))
+    p1.start()
+    p2.start()
+    p1.join()
+    p2.join()

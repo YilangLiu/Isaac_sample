@@ -33,7 +33,7 @@ from legged_gym.envs.base.legged_robot_config import LeggedRobotCfg, LeggedRobot
 
 class Go2ParkourCfg( LeggedRobotCfg ):
     class init_state( LeggedRobotCfg.init_state ):
-        pos = [0.0, 0.0, 0.42] # x,y,z [m]
+        pos = [0.0, 0.0, 0.40] # x,y,z [m]
         default_joint_angles = { # = target angles [rad] when action = 0.0
             'FL_hip_joint': 0.1,   # [rad]
             'RL_hip_joint': 0.1,   # [rad]
@@ -49,6 +49,38 @@ class Go2ParkourCfg( LeggedRobotCfg ):
             'RL_calf_joint': -1.5,    # [rad]
             'FR_calf_joint': -1.5,  # [rad]
             'RR_calf_joint': -1.5,    # [rad]
+        }
+        joint_angles_range_low = {
+            'FL_hip_joint': -1.0472,   # [rad]
+            'RL_hip_joint': -1.0472,   # [rad]
+            'FR_hip_joint': -1.0472 ,  # [rad]
+            'RR_hip_joint': -1.0472,   # [rad]
+
+            'FL_thigh_joint': -1.5708,     # [rad]
+            'RL_thigh_joint': -0.5236,   # [rad]
+            'FR_thigh_joint': -1.5708,     # [rad]
+            'RR_thigh_joint': -0.5236,   # [rad]
+
+            'FL_calf_joint': -2.7227,   # [rad]
+            'RL_calf_joint': -2.7227,    # [rad]
+            'FR_calf_joint': -2.7227,  # [rad]
+            'RR_calf_joint': -2.7227,    # [rad]
+        }
+        joint_angles_range_high = {
+            'FL_hip_joint': 1.0472,   # [rad]
+            'RL_hip_joint': 1.0472,   # [rad]
+            'FR_hip_joint': 1.0472 ,  # [rad]
+            'RR_hip_joint': 1.0472,   # [rad]
+
+            'FL_thigh_joint': 3.4907,     # [rad]
+            'RL_thigh_joint': 4.5379,   # [rad]
+            'FR_thigh_joint': 3.4907,     # [rad]
+            'RR_thigh_joint': 4.5379,   # [rad]
+
+            'FL_calf_joint': -0.83776,   # [rad]
+            'RL_calf_joint': -0.83776,    # [rad]
+            'FR_calf_joint': -0.8376,  # [rad]
+            'RR_calf_joint': -0.83776,    # [rad]
         }
     # From Go1
     class init_state_slope( LeggedRobotCfg.init_state ):
@@ -75,7 +107,7 @@ class Go2ParkourCfg( LeggedRobotCfg ):
         control_type = 'P'
         stiffness = {'joint': 40.}  # [N*m/rad]
         damping = {'joint': 1}     # [N*m*s/rad]
-        action_scale = 0.25
+        action_scale = 1.0 # 0.25
         decimation = 4
 
     class asset( LeggedRobotCfg.asset ):
@@ -113,7 +145,7 @@ class Go2ParkourCfg( LeggedRobotCfg ):
             feet_stumble = 0.0
             feet_edge = 0.0
 
-            dial_gaits = 0.0
+            dial_gaits = 0.1
             dial_height = 1.0
             dial_yaw = 0.3
             dial_vel = 1.0
@@ -145,8 +177,8 @@ class Go2ParkourCfg( LeggedRobotCfg ):
 
     class terrain( LeggedRobotCfg.terrain):
         mesh_type = 'trimesh'  # Explicitly set for clarity
-        num_rows = 2 #10
-        num_cols = 40
+        num_rows = 2 # 10
+        num_cols = 10 # 40 seems like robot will have intercollision check over the 
         height = [0.02, 0.02]
         terrain_dict = {"smooth slope": 0., 
                         "rough slope up": 0.0,
@@ -183,13 +215,20 @@ class Go2ParkourCfg( LeggedRobotCfg ):
         action_delay_view = 0
 
     class env(LeggedRobotCfg.env):
-        num_envs = 10
+        num_envs = 1
         episode_length_s = 60 # episode length in seconds 
         num_privileged_obs = 37 # base position, base orientation, base_lin_vel, base_ang_vel, dof_pos, dof_vel  
 
+    class shared_memory(LeggedRobotCfg.shared_memory):
+        names = ["action_shm", "plan_time_shm", "time_shm", "last_actions_shm", 
+                 "last_dof_vel_shm", "last_torques_shm", "last_root_vel_shm", "feet_air_time_shm", 
+                 "reset_buf_shm", "obs_history_buf_shm", "contact_buf_shm", "action_history_buf_shm",
+                 "cur_goal_idx_shm", "reach_goal_timer_shm", "terrain_levels_shm", "commands_shm", 
+                 "time_out_buf_shm", "privileged_obs_buf_shm", "episode_length_buf_shm"]
+
 class Go2ParkourCfgSample( LeggedRobotCfgSample ):
     class planner( LeggedRobotCfgSample.planner ):
-        num_samples = 1000 
+        num_samples = 1000
         sample_noise = 0.05
         horizon = 16
         num_knots = 4
