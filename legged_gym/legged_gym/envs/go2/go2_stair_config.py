@@ -105,8 +105,8 @@ class Go2ParkourCfg( LeggedRobotCfg ):
     class control( LeggedRobotCfg.control ):
         # PD Drive parameters:
         control_type = 'P'
-        stiffness = {'joint': 40.}  # [N*m/rad]
-        damping = {'joint': 1}     # [N*m*s/rad]
+        stiffness = {'joint': 40.} # {'joint': 40.}  # [N*m/rad]
+        damping = {'joint': 1} # {'joint': 1}     # [N*m*s/rad]
         action_scale = 1.0 # 0.25
         decimation = 4
 
@@ -123,9 +123,9 @@ class Go2ParkourCfg( LeggedRobotCfg ):
   
     class rewards( LeggedRobotCfg.rewards ):
         soft_dof_pos_limit = 0.9
-        base_height_target = 0.25
+        height_target = 0.35
         gait = "trot"
-        vel_tar = [1.0, 0.0, 0.0]
+        vel_tar = [0.1, 0.0, 0.0]
         ang_vel_tar = [0.0, 0.0, 0.0]
         class scales(LeggedRobotCfg.rewards.scales):
             # tracking rewards
@@ -134,18 +134,19 @@ class Go2ParkourCfg( LeggedRobotCfg ):
             # regularization rewards
             lin_vel_z = 0.0
             ang_vel_xy = 0.0
-            orientation = 0.5
+            orientation = 0.0
             dof_acc = 0.0
             collision = 0.
             action_rate = 0.
             delta_torques = 0.
             torques = 0.
             hip_pos = 0.
-            dof_error = 0.0
+            dof_error = -0.1
             feet_stumble = 0.0
             feet_edge = 0.0
 
-            dial_gaits = 0.1
+            dial_gaits = 0.0 # 0.1
+            dial_upright = 0.5
             dial_height = 1.0
             dial_yaw = 0.3
             dial_vel = 1.0
@@ -228,10 +229,11 @@ class Go2ParkourCfg( LeggedRobotCfg ):
 
 class Go2ParkourCfgSample( LeggedRobotCfgSample ):
     class planner( LeggedRobotCfgSample.planner ):
-        num_samples = 1000
-        sample_noise = 0.05
+        num_samples = 500
+        sample_noise = 0.01
         horizon = 16
-        num_knots = 4
+        num_knots = 6
 
-        
-  
+    class rollout_env( LeggedRobotCfgSample.rollout_env ):
+        dt = 0.01
+        substeps = 2

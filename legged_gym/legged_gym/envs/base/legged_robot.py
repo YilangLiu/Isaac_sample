@@ -142,8 +142,9 @@ class LeggedRobot(BaseTask):
 
         self.global_counter += 1
         self.total_env_steps_counter += 1
-        clip_actions = self.cfg.normalization.clip_actions / self.cfg.control.action_scale
-        self.actions = torch.clip(actions, -clip_actions, clip_actions).to(self.device)
+        # clip_actions = self.cfg.normalization.clip_actions / self.cfg.control.action_scale
+        # self.actions = torch.clip(actions, -clip_actions, clip_actions).to(self.device)
+        self.actions = actions
         self.render()
 
         for _ in range(self.cfg.control.decimation):
@@ -421,15 +422,16 @@ class LeggedRobot(BaseTask):
             extras (dict): Contains agent environments history buffer 
             env_ids (torch.Tensor): Contains selected robot envs that need to reset
         """
-        
+        self.privileged_obs_buf[env_ids] = torch.repeat_interleave(torch.from_numpy(self.privileged_obs_buf_shared).to(self.device), self.num_samples_per_env, dim=0)[env_ids]
+
         # In case we need to reset planner environment partially (Unlikely)
         if env_ids is None:
             env_ids = torch.arange(self.num_envs, device=self.device)
 
         # Used cached priv_state for reset
         if priv_states is None:
-            priv_states = self.init_priv_state
-
+            priv_states =  self.privileged_obs_buf # self.init_priv_state 
+            
         # reset robot dofs 
         self._set_dofs(env_ids, priv_states[env_ids, 13:])
 
@@ -452,8 +454,8 @@ class LeggedRobot(BaseTask):
         self.contact_buf[env_ids, :, :] = torch.repeat_interleave(torch.from_numpy(self.contact_buf_shared).to(self.device), self.num_samples_per_env, dim=0)[env_ids, :, :]
         self.action_history_buf[env_ids, :, :] = torch.repeat_interleave(torch.from_numpy(self.action_history_buf_shared).to(self.device), self.num_samples_per_env, dim=0)[env_ids, :, :]
         self.cur_goal_idx[env_ids] = torch.repeat_interleave(torch.from_numpy(self.cur_goal_idx_shared).to(self.device), self.num_samples_per_env, dim=0)[env_ids]
-        self.reach_goal_timer[env_ids] = torch.repeat_interleave(torch.from_numpy(self.reach_goal_timer_shared).to(self.device), self.num_samples_per_env, dim=0)[env_ids]
-
+        self.reach_goal_timer[env_ids] = torch.repeat_interleave(torch.from_numpy(self.reach_goal_timer_shared).to(self.device), self.num_samples_per_env, dim=0)[env_ids]    
+        
         # log additional curriculum info
         if self.cfg.terrain.curriculum:
             self.extras["episode"]["terrain_level"][:] = torch.repeat_interleave(torch.from_numpy(self.terrain_levels).to(self.device), self.num_samples_per_env, dim=0)  
@@ -776,7 +778,8 @@ class LeggedRobot(BaseTask):
             
         else:
             self.root_states[env_ids] = root_states
-            self.root_states[env_ids, :2] += torch_rand_float(-0.01, 0.01, (len(env_ids), 2), device=self.device)
+            self.root_states[env_ids, :2] += torch_rand_float(-0.01, 0.01, (len(env_ids), 2), device=self.device) # randomize base position slightly 
+        self.root_states[env_ids, :2] += torch_rand_float(-0.01, 0.01, (len(env_ids), 2), device=self.device)
         env_ids_int32 = env_ids.to(dtype=torch.int32)
         self.gym.set_actor_root_state_tensor_indexed(self.sim,
                                                      gymtorch.unwrap_tensor(self.root_states),
@@ -791,7 +794,7 @@ class LeggedRobot(BaseTask):
         Args:
             env_ids (List[int]): Environemnt ids
         """
-        self.dof_pos[env_ids] = self.default_dof_pos + torch_rand_float(0., 0.9, (len(env_ids), self.num_dof), device=self.device)
+        self.dof_pos[env_ids] = self.default_dof_pos + torch_rand_float(0., 0.1, (len(env_ids), self.num_dof), device=self.device)
         self.dof_vel[env_ids] = 0.
 
         env_ids_int32 = env_ids.to(dtype=torch.int32)
@@ -917,7 +920,7 @@ class LeggedRobot(BaseTask):
         self.init_priv_state = torch.cat((self.root_states[:, :13],
                                         self.dof_pos,
                                         self.dof_vel), dim=-1).to(self.device)
-
+        self.privileged_obs_buf[:] = self.init_priv_state
         self.force_sensor_tensor = gymtorch.wrap_tensor(force_sensor_tensor).view(self.num_envs, 4, 6) # for feet only, see create_env()
         self.contact_forces = gymtorch.wrap_tensor(net_contact_forces).view(self.num_envs, -1, 3) # shape: num_envs, num_bodies, xyz axis
         self.foot_positions = self.rigid_body_states[:, self.feet_indices, 0:3]
@@ -939,12 +942,12 @@ class LeggedRobot(BaseTask):
             "gallop": torch.tensor([0.3, 3.5, 0.10], dtype=torch.float32, device=self.device),
         }
         self._gait_phase = {
-                    "stand": torch.zeros(4, dtype=torch.float32, device=self.device),
-                    "walk": torch.tensor([0.0, 0.5, 0.75, 0.25], dtype=torch.float32, device=self.device),
-                    "trot": torch.tensor([0.0, 0.5, 0.5, 0.0], dtype=torch.float32, device=self.device),
-                    "canter": torch.tensor([0.0, 0.33, 0.33, 0.66], dtype=torch.float32, device=self.device),
-                    "gallop": torch.tensor([0.0, 0.05, 0.4, 0.35], dtype=torch.float32, device=self.device),
-                }
+            "stand": torch.zeros(4, dtype=torch.float32, device=self.device),
+            "walk": torch.tensor([0.0, 0.5, 0.75, 0.25], dtype=torch.float32, device=self.device),
+            "trot": torch.tensor([0.0, 0.5, 0.5, 0.0], dtype=torch.float32, device=self.device),
+            "canter": torch.tensor([0.0, 0.33, 0.33, 0.66], dtype=torch.float32, device=self.device),
+            "gallop": torch.tensor([0.0, 0.05, 0.4, 0.35], dtype=torch.float32, device=self.device),
+        }
         self.duty_ratio, self.cadence, self.amplitude = self._gait_params[self.gait]
         self.phase = self._gait_phase[self.gait]
         self.height_target = self.cfg.rewards.height_target
@@ -1766,6 +1769,10 @@ class LeggedRobot(BaseTask):
         rew = (self.terrain_levels > 3) * torch.sum(self.feet_at_edge, dim=-1)
         return rew
 
+    def _reward_dial_upright(self):
+        rew = -torch.sum(torch.square(self.projected_gravity[:, :2]), dim=1)
+        return rew
+    
     def _reward_dial_gaits(self):
         z_feet_tar = self.get_foot_step_vmap(self.duty_ratio, self.cadence, self.amplitude, self.phase, self.episode_length_buf * self.ctrl_dt)
         rew = -torch.sum(((z_feet_tar - self.foot_positions[:,:,2]) / 0.05) ** 2)

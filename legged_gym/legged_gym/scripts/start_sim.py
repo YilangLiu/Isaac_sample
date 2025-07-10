@@ -51,13 +51,13 @@ def Planner(args, env_cfg, planner_cfg, ready_event):
             while True:
                 plan_time = time_shared[0]
                 shift_time = plan_time - last_plan_time
+                # print("shift time is: ", shift_time)
                 # Add information are stored in the shared memory
                 # now = time.time()
                 actions = planner.update(shift_time)
-                # planner.update(shift_time)
                 # print("planning update freq is ", time.time() - now)
                 # actions = torch.zeros((env_cfg.env.num_agent_envs, planner_cfg.planner.horizon, env_cfg.env.num_actions), dtype=torch.float32)
-                # time.sleep(0.01)
+                # actions += planner.rollout_envs.reindex(planner.rollout_envs.default_dof_pos).cpu().numpy().reshape((1, 1, 12))
                 plan_time_shared[0] = plan_time
                 last_plan_time = plan_time
                 action_shared[:] = actions.cpu().numpy()
@@ -142,12 +142,15 @@ def World(args, env_cfg, planner_cfg, ready_event):
                 # actions = planner.update(actions, priv_state.tolist(), extras)
                 # now = time.time()
                 actions_applied = torch.tensor(action_shared, dtype=torch.float32, device=env.device)
+                # actions_applied = torch.zeros_like(torch.tensor(action_shared, dtype=torch.float32, device=env.device)) 
+                # actions_applied += env.reindex(env.default_dof_pos).reshape((1, 1, 12))
                 while world_time <= (plan_time_shared[0] + ctrl_dt):
                     # print("action appled shape: ", actions_applied.shape)
                     # now = time.time()
                     obs, priv_state, rews, done, infos = env.step(actions_applied[:, 0, :]) 
                     # print("step time is: ", time.time() - now)
                     env.publish_planner_info()
+                    
                     # rewards.append(torch.mean(rews).item())
                     
                     # # Update plot data

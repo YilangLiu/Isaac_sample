@@ -317,19 +317,18 @@ class LeggedRobotCfg(BaseConfig):
 
             # dial_MPC rewards 
             dial_gaits = 0.1
+            dial_upright = 0.5
             dial_height = 1.
             dial_yaw = 1.
             dial_vel = 1.
             dial_ang_vel = 1.
             dial_air_time = 0.
-
             
         only_positive_rewards = False # if true negative total rewards are clipped at zero (avoids early termination problems)
         tracking_sigma = 0.2 # tracking reward = exp(-error^2/sigma)
         soft_dof_pos_limit = 1. # percentage of urdf limits, values above this limit are penalized
         soft_dof_vel_limit = 1
         soft_torque_limit = 0.4
-        base_height_target = 1.
         max_contact_force = 40. # forces above this value are penalized
         gait = "trot"
         height_target = 0.3
@@ -346,7 +345,7 @@ class LeggedRobotCfg(BaseConfig):
         names = []
 
     class sim:
-        dt =  0.005
+        dt =  0.005 
         substeps = 1
         gravity = [0., 0. ,-9.81]  # [m/s^2]
         up_axis = 1  # 0 is y, 1 is z
@@ -443,4 +442,9 @@ class LeggedRobotCfgSample(BaseConfig):
         num_knots: int = 4
         sampling_method: str = 'gaussian'
         device: str = 'cuda:0'
-        sample_noise: float = 0.1
+        sample_noise: float = 0.01
+    
+    class rollout_env:
+        dt: float = 0.01
+        substeps: int = 2
+

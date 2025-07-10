@@ -69,11 +69,13 @@ for _ in range(0, 100, 1):
 
 print("time is ", time.time() - now)
 
-
+leg_names = ["FL", "FR", "RL", "RR"]
 y = torch.cat(y, dim=2)
-plt.plot(x, y.cpu().numpy()[0].T)
-plt.show()
-
+y = y.cpu().numpy()[123].T
+for i in range(4):
+    plt.plot(x, y[:, i], label=f"{leg_names[i]}_z")
+plt.legend()
+plt.savefig("gait_scheduler2.png")
 # t = torch.tensor([0], dtype=torch.float32).reshape((-1, 1))
 # t = t.to("cuda")
 # now = time.time()

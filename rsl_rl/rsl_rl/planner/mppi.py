@@ -15,6 +15,9 @@ import time
 class MPPI_Isaac(ABC):
     def __init__(self, env_cfg: LeggedRobotCfg, planner_cfg: LeggedRobotCfgSample, args, extras):
         self.env_cfg = env_cfg
+        self.planner_cfg = planner_cfg
+        self.args = args
+        self.extras = extras
         self.sample_method = planner_cfg.planner.sampling_method
         self.num_samples_per_env = planner_cfg.planner.num_samples
         self.num_knots = planner_cfg.planner.num_knots
@@ -24,17 +27,9 @@ class MPPI_Isaac(ABC):
         self.T = planner_cfg.planner.horizon
         self.nu = env_cfg.env.num_actions
         self.rollout_envs: LeggedRobot
-        args.headless = True
-        env_cfg.env.is_planner = True
-        # env_cfg.env.is_planner = False
-        env_cfg.env.num_envs = self.num_planner_envs # Initialize envs = num_planner_envs * samples_per_env
-        args.use_camera = False # disable camera for planner
-        self.rollout_envs, _ = task_registry.make_env(name=args.task, args=args, env_cfg=env_cfg)
-        self.rollout_envs._init_shared_memory(create_new=False, ready_event=extras["ready_event"])
-        # self.rollout_envs._init_shared_memory(create_new=True, ready_event=None)
-        self.rollout_envs.num_samples_per_env = self.num_samples_per_env
-        self.U_nom = torch.zeros((self.num_agent_envs, self.num_knots, self.nu), device=self.device) + self.rollout_envs.default_dof_pos.reshape((1, 1, self.nu))
-
+        self.init_rollout_envs()
+        self.U_nom = torch.zeros((self.num_agent_envs, self.num_knots, self.nu), device=self.device) 
+        self.U_nom += self.rollout_envs.reindex(self.rollout_envs.default_dof_pos).reshape((1, 1, self.nu))
         self.noise_sigma = torch.eye(self.nu, device=self.device) * planner_cfg.planner.sample_noise
         self.noise_mu = torch.zeros(self.nu, device=self.device)
         self.noise_dist = MultivariateNormal(self.noise_mu, self.noise_sigma)
@@ -54,6 +49,21 @@ class MPPI_Isaac(ABC):
         self.knots_steps = torch.linspace(0, self.T * self.ctrl_dt, self.num_knots, dtype=torch.float32, device=self.device)
         # self._init_shared_memory()
 
+    def init_rollout_envs(self):
+        self.args.headless = True
+        self.env_cfg.env.is_planner = True
+        # env_cfg.env.is_planner = False
+        self.env_cfg.env.num_envs = self.num_planner_envs # Initialize envs = num_planner_envs * samples_per_env
+        self.args.use_camera = False # disable camera for planner
+        # Reduce the number of substeps and increase the simulation dt to speed up the planning 
+        self.env_cfg.sim.dt = self.planner_cfg.rollout_env.dt
+        self.env_cfg.control.decimation = self.planner_cfg.rollout_env.substeps
+        # Initialize the rollout environments
+        self.rollout_envs, _ = task_registry.make_env(name=self.args.task, args=self.args, env_cfg=self.env_cfg)
+        # Initialize the shared memory for the rollout environments
+        self.rollout_envs._init_shared_memory(create_new=False, ready_event=self.extras["ready_event"])
+        # self.rollout_envs._init_shared_memory(create_new=True, ready_event=None)
+        self.rollout_envs.num_samples_per_env = self.num_samples_per_env
 
     def init_storage(self, num_envs, num_horizon_per_env, actor_obs_shape, critic_obs_shape, action_shape):
         self.storage = RolloutStorage(num_envs, num_horizon_per_env, actor_obs_shape,  critic_obs_shape, action_shape, self.device)
@@ -91,14 +101,14 @@ class MPPI_Isaac(ABC):
         # Repeat the current action plan from the agent environments since we need to sample
         actions_sampled = torch.repeat_interleave(self.U_nom, self.num_samples_per_env, dim=0)
 
-        # # Then overwirte the last action to be zeros
-        # actions_sampled[:, -1, :] = torch.zeros((self.num_planner_envs, self.nu))  
-    
         # Add noise to the sampled action plan
         U_sampled = actions_sampled + noise
 
         # Upsample the sampled actions to match the actual control sequences 
         U_sampled = self.control_interpolations(self.knots_steps, U_sampled, self.ctrl_steps)
+
+        # Clip U_sampled to the action range
+        U_sampled = torch.clip(U_sampled, self.rollout_envs.default_dof_pos_low, self.rollout_envs.default_dof_pos_high)
 
         # reset the current planner environment that matches the agent environments
         self.rollout_envs.set_rollout_env_idx()
@@ -112,10 +122,15 @@ class MPPI_Isaac(ABC):
         best_idxs = torch.argmax(rewards, dim=1) + torch.arange(0, self.num_planner_envs, 
                                                                 self.num_samples_per_env, 
                                                                 device=self.device)
+        
         # Clear the storage to for next iteration
         self.storage.clear()
 
-        return U_sampled[best_idxs] 
+        # Downsample back to the U_nom for next iteration
+        self.U_nom[:] = self.control_interpolations(self.ctrl_steps, U_sampled[best_idxs], self.knots_steps)  
+
+        # return the optimized action sequence for the agent environments
+        return U_sampled[best_idxs]
 
     def rollout(self, actions):
         """
